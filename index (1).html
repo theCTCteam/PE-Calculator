@@ -1,0 +1,153 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loan Calculator</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState } = React;
+
+    // Loan products and their margins
+    const loanProducts = [
+      { name: 'Conventional', margin: 275, feesApplicable: false },
+      { name: 'Conventional HB', margin: 275, feesApplicable: false },
+      { name: 'FHA/USDA', margin: 330, feesApplicable: true },
+      { name: 'FHA/USDA HB', margin: 330, feesApplicable: false },
+      { name: 'VA', margin: 330, feesApplicable: false },
+      { name: 'VA HB', margin: 330, feesApplicable: false },
+      { name: 'Jumbo', margin: 225, feesApplicable: false },
+      { name: 'Non QM', margin: 225, feesApplicable: false },
+    ];
+
+    // Main calculator component
+    const LoanCalculator = () => {
+      // State for form inputs
+      const [formData, setFormData] = useState({
+        product: 'FHA/USDA',
+        loanAmount: 350000,
+        feesCharged: 'Yes',
+        lockedPrice: 99.75,
+        ptsCharged: 0,
+        loComp: 120,
+      });
+      const [errors, setErrors] = useState({});
+
+      // Handle input changes
+      const handleChange = (e) => {
+        const { name, value } = e.target;
+        setFormData((prev) => ({ ...prev, [name]: value }));
+        setErrors((prev) => ({ ...prev, [name]: '' }));
+      };
+
+      // Validate inputs
+      const validateInputs = () => {
+        const newErrors = {};
+        const numericFields = ['loanAmount', 'lockedPrice', 'ptsCharged', 'loComp'];
+        numericFields.forEach((field) => {
+          const value = parseFloat(formData[field]);
+          if (isNaN(value) || value < 0) {
+            newErrors[field] = `${field.replace(/([A-Z])/g, ' $1')} must be a non-negative number`;
+          }
+        });
+        if (parseFloat(formData.loanAmount) === 0) {
+          newErrors.loanAmount = 'Loan Amount cannot be zero';
+        }
+        setErrors(newErrors);
+        return Object.keys(newErrors).length === 0;
+      };
+
+      // Calculate financial metrics
+      const calculateMetrics = () => {
+        if (!validateInputs()) return null;
+
+        const loanAmount = parseFloat(formData.loanAmount);
+        const lockedPrice = parseFloat(formData.lockedPrice);
+        const ptsCharged = parseFloat(formData.ptsCharged);
+        const loComp = parseFloat(formData.loComp);
+        const selectedProduct = loanProducts.find((p) => p.name === formData.product);
+        const fixedExpense = 5796;
+
+        // Fee Revenue: $1650 if fees are charged and applicable, else $0
+        const feeRevenue = selectedProduct.feesApplicable && formData.feesCharged === 'Yes' ? 1650 : 0;
+        const feeRevenueBPS = loanAmount ? (feeRevenue / loanAmount) * 10000 : 0;
+
+        // Total Revenue: (Loan Amount * (Locked Price + PTS Charged) / 100 + Fee Revenue)
+        const totalRevenue = (loanAmount * (lockedPrice + ptsCharged) / 100 + feeRevenue);
+        const totalRevenueBPS = loanAmount ? (totalRevenue / loanAmount) * 10000 : 0;
+
+        // Branch Margin: From product table
+        const branchMargin = selectedProduct.margin;
+        const branchMarginDollars = (branchMargin / 10000) * loanAmount;
+
+        // P/E: (Total Revenue - Fixed Expense)
+        const peDollars = totalRevenue - fixedExpense;
+        const peBPS = loanAmount ? (peDollars / loanAmount) * 10000 : 0;
+
+        // Commissions: Loan Amount * LO Comp / 10000
+        const commissions = (loanAmount * loComp) / 10000;
+        const commissionsBPS = loComp;
+
+        // Direct Loan Costs: Fixed at $1895
+        const directLoanCosts = 1895;
+        const directLoanCostsBPS = loanAmount ? (directLoanCosts / loanAmount) * 10000 : 0;
+
+        // Payroll Tax | Bonus: Fixed at $63
+        const payrollTaxBonus = 63;
+        const payrollTaxBonusBPS = loanAmount ? (payrollTaxBonus / loanAmount) * 10000 : 0;
+
+        // Variable Expenses: Sum of commissions, direct loan costs, payroll tax/bonus
+        const variableExpenses = commissions + directLoanCosts + payrollTaxBonus;
+        const variableExpensesBPS = loanAmount ? (variableExpenses / loanAmount) * 10000 : 0;
+
+        // Contribution to Branch: Total Revenue - Variable Expenses
+        const contributionToBranch = totalRevenue - variableExpenses;
+        const contributionToBranchBPS = loanAmount ? (contributionToBranch / loanAmount) * 10000 : 0;
+
+        // Need to Makeup: Fixed Expense - Contribution to Branch
+        const needToMakeup = fixedExpense - contributionTo
